@@ -2,9 +2,9 @@
 
 This script performs:
 1) Pair-level pre-filtering before all anomaly actions.
-2) Plot-day management anomaly mining using robust statistics.
-3) Pair-day mating inference using non-zero-day baseline statistics.
-4) Biological plausibility filtering on candidate mating days.
+2) Data quality screening and low-signal pair detection.
+3) Plot-day management anomaly mining using robust statistics.
+4) Pair-level mating inference with biologically constrained filtering.
 5) Year + paddock result export (6 files in total).
 6) EDA tables, figures, and bilingual Markdown reports.
 
@@ -38,8 +38,12 @@ PLOT_MAP = {
     "No Shade": "No_shade",
 }
 
+# Pair-level low-signal rule
+LOW_SIGNAL_ZERO_RATIO_THRESHOLD = 0.50
+LOW_SIGNAL_TOTAL_QUANTILE = 0.20
+
 # Plot-day management anomaly rule
-MANAGEMENT_RZ_THRESHOLD = 3.5
+MANAGEMENT_RZ_THRESHOLD = 3.0
 
 # Pair pre-filter rule (requested upgrade)
 PAIR_MIN_NONZERO_DAYS = 7
@@ -49,11 +53,12 @@ PAIR_RZ_THRESHOLD = 3.0
 # Pair-level mating candidate rule
 MATING_SCORE_THRESHOLD = 4.0
 MATING_FC_THRESHOLD = 3.0
+MATING_DOMINANCE_THRESHOLD = 2.0
 MATING_ABS_COUNT_THRESHOLD = 80.0
 
 # Biological plausibility caps
-MAX_EWE_PER_RAM_PER_DAY = 40
-MAX_RAM_PER_EWE_PER_DAY = 4
+MAX_EWE_PER_RAM_PER_DAY = 30
+MAX_RAM_PER_EWE_PER_DAY = 3
 
 
 @dataclass
@@ -269,7 +274,7 @@ def infer_pair_candidates(
     bundle: YearData,
     anomaly_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Infer candidate mating days by scanning all non-zero day counts per pair."""
+    """Infer one strongest candidate day per pair and compute quality metrics."""
     full_cols = bundle.full_day_cols
     n_days = len(full_cols)
     rows: List[dict] = []
@@ -285,6 +290,10 @@ def infer_pair_candidates(
 
     for treatment, g in bundle.day_df.groupby("Plot"):
         idx = g.index
+        x = day_numeric.loc[idx]
+        period_total = x.sum(axis=1)
+        zero_ratio = (x == 0).sum(axis=1) / n_days
+        low_signal_threshold = float(period_total.quantile(LOW_SIGNAL_TOTAL_QUANTILE))
         management_days = management_by_treatment.get(treatment, set())
         baseline_days = [c for c in full_cols if c not in management_days]
         if not baseline_days:
@@ -293,64 +302,70 @@ def infer_pair_candidates(
         for row_id in idx:
             row = bundle.day_df.loc[row_id]
             series = day_numeric.loc[row_id]
-            period_total = float(series.sum())
-            day_avg = period_total / n_days if n_days > 0 else 0.0
 
-            # Baseline is computed on non-zero values only, as requested.
-            baseline_nonzero = series[baseline_days]
-            baseline_nonzero = baseline_nonzero[baseline_nonzero > 0]
-            baseline_n_nonzero = int(len(baseline_nonzero))
-            if baseline_n_nonzero == 0:
-                baseline_median = 0.0
-                baseline_mad = 0.0
-            else:
-                baseline_median = float(baseline_nonzero.median())
-                baseline_mad = float((baseline_nonzero - baseline_median).abs().median())
+            total = float(period_total.loc[row_id])
+            zratio = float(zero_ratio.loc[row_id])
+            low_signal = (zratio > LOW_SIGNAL_ZERO_RATIO_THRESHOLD) and (total < low_signal_threshold)
+
+            base = series[baseline_days]
+            baseline_median = float(base.median())
+            baseline_mad = float((base - baseline_median).abs().median())
             baseline_scale = 1.4826 * baseline_mad + 1.0
 
-            # Evaluate every non-zero day value (not only max day).
-            non_zero_days = series[series > 0]
-            for day_col, count in non_zero_days.items():
-                day_col_str = str(day_col)
-                count_value = float(count)
-                in_management_day = day_col_str in management_days
-                count_z = (count_value - baseline_median) / baseline_scale
-                count_fc = (count_value + 1.0) / (baseline_median + 1.0)
-                candidate_pre_cap = (
-                    (not in_management_day)
-                    and (count_value >= MATING_ABS_COUNT_THRESHOLD)
-                    and (count_fc >= MATING_FC_THRESHOLD)
-                    and (count_z >= MATING_SCORE_THRESHOLD)
-                )
+            candidate_series = series.drop(labels=list(management_days), errors="ignore")
+            if candidate_series.empty:
+                best_day = ""
+                best_count = 0.0
+                best_z = -1e9
+                best_fc = 0.0
+                best_dom = 0.0
+            else:
+                best_day = str(candidate_series.idxmax())
+                best_count = float(candidate_series.max())
+                sorted_vals = candidate_series.sort_values()
+                second = float(sorted_vals.iloc[-2]) if len(sorted_vals) > 1 else 0.0
+                best_z = (best_count - baseline_median) / baseline_scale
+                best_fc = (best_count + 1.0) / (baseline_median + 1.0)
+                best_dom = (best_count + 1.0) / (second + 1.0)
 
-                rows.append(
-                    {
-                        "year": bundle.year,
-                        "row_id": int(row_id),
-                        "Ewe_EID": row["Ewe_EID"],
-                        "Ram_EID": row["Ram_EID"],
-                        "treatment": treatment,
-                        "day_col": day_col_str,
-                        "count_value": count_value,
-                        "count_z": float(count_z),
-                        "count_fc": float(count_fc),
-                        "period_total": period_total,
-                        "n_full_days": n_days,
-                        "day_proximity_avg": day_avg,
-                        "baseline_median_nonzero": baseline_median,
-                        "baseline_mad_nonzero": baseline_mad,
-                        "baseline_n_nonzero": baseline_n_nonzero,
-                        "in_management_day": bool(in_management_day),
-                        "candidate_pre_cap": bool(candidate_pre_cap),
-                    }
-                )
+            candidate_pre_cap = (
+                (not low_signal)
+                and (best_count >= MATING_ABS_COUNT_THRESHOLD)
+                and (best_z >= MATING_SCORE_THRESHOLD)
+                and (best_fc >= MATING_FC_THRESHOLD)
+                and (best_dom >= MATING_DOMINANCE_THRESHOLD)
+            )
 
-    out = pd.DataFrame(rows).sort_values(["year", "treatment", "row_id", "day_col"]).reset_index(drop=True)
+            rows.append(
+                {
+                    "year": bundle.year,
+                    "row_id": int(row_id),
+                    "Ewe_EID": row["Ewe_EID"],
+                    "Ram_EID": row["Ram_EID"],
+                    "treatment": treatment,
+                    "period_total": total,
+                    "zero_ratio": zratio,
+                    "low_signal_threshold": low_signal_threshold,
+                    "low_signal_pair": bool(low_signal),
+                    "baseline_median": baseline_median,
+                    "baseline_mad": baseline_mad,
+                    "best_day_col": best_day,
+                    "best_day_count": best_count,
+                    "best_day_z": best_z,
+                    "best_day_fc": best_fc,
+                    "best_day_dominance": best_dom,
+                    "n_full_days": n_days,
+                    "day_proximity_avg": total / n_days if n_days > 0 else 0.0,
+                    "candidate_pre_cap": bool(candidate_pre_cap),
+                }
+            )
+
+    out = pd.DataFrame(rows).sort_values(["year", "treatment", "row_id"]).reset_index(drop=True)
     return out
 
 
 def apply_biological_caps(pair_metrics: pd.DataFrame) -> pd.DataFrame:
-    """Apply ram/day and ewe/day caps to candidate pair-day events."""
+    """Apply ram/day and ewe/day caps to candidate events."""
     cand = pair_metrics[pair_metrics["candidate_pre_cap"]].copy()
     if cand.empty:
         pair_metrics["candidate_selected"] = False
@@ -360,29 +375,27 @@ def apply_biological_caps(pair_metrics: pd.DataFrame) -> pd.DataFrame:
         return pair_metrics
 
     cand = cand.sort_values(
-        ["year", "treatment", "Ram_EID", "day_col", "count_z", "count_value"],
+        ["year", "treatment", "Ram_EID", "best_day_col", "best_day_z", "best_day_count"],
         ascending=[True, True, True, True, False, False],
     )
-    cand["ram_day_rank"] = cand.groupby(["year", "treatment", "Ram_EID", "day_col"]).cumcount() + 1
+    cand["ram_day_rank"] = cand.groupby(["year", "treatment", "Ram_EID", "best_day_col"]).cumcount() + 1
     cand = cand[cand["ram_day_rank"] <= MAX_EWE_PER_RAM_PER_DAY].copy()
 
     cand = cand.sort_values(
-        ["year", "treatment", "Ewe_EID", "day_col", "count_z", "count_value"],
+        ["year", "treatment", "Ewe_EID", "best_day_col", "best_day_z", "best_day_count"],
         ascending=[True, True, True, True, False, False],
     )
-    cand["ewe_day_rank"] = cand.groupby(["year", "treatment", "Ewe_EID", "day_col"]).cumcount() + 1
+    cand["ewe_day_rank"] = cand.groupby(["year", "treatment", "Ewe_EID", "best_day_col"]).cumcount() + 1
     selected = cand[cand["ewe_day_rank"] <= MAX_RAM_PER_EWE_PER_DAY].copy()
 
-    selected_keys = set(zip(selected["year"], selected["row_id"], selected["day_col"]))
+    selected_keys = set(zip(selected["year"], selected["row_id"]))
 
     out = pair_metrics.copy()
-    out["candidate_selected"] = out.apply(
-        lambda r: (r["year"], r["row_id"], r["day_col"]) in selected_keys, axis=1
-    )
+    out["candidate_selected"] = out.apply(lambda r: (r["year"], r["row_id"]) in selected_keys, axis=1)
     out["candidate_removed_by_cap"] = out["candidate_pre_cap"] & (~out["candidate_selected"])
 
-    rank_cols = selected[["year", "row_id", "day_col", "ram_day_rank", "ewe_day_rank"]]
-    out = out.merge(rank_cols, on=["year", "row_id", "day_col"], how="left")
+    rank_cols = selected[["year", "row_id", "ram_day_rank", "ewe_day_rank"]]
+    out = out.merge(rank_cols, on=["year", "row_id"], how="left")
     return out
 
 
@@ -398,36 +411,44 @@ def build_final_results(
     bundles: Dict[int, YearData],
     pair_metrics: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Build final output with one row per selected mating day and fallback N rows."""
+    """Build final pair-level output with required columns."""
     rows: List[dict] = []
 
-    selected = pair_metrics[pair_metrics["candidate_selected"]].copy()
-    for _, r in selected.iterrows():
+    for _, r in pair_metrics.iterrows():
         year = int(r["year"])
         row_id = int(r["row_id"])
         bundle = bundles[year]
         n_days = int(r["n_full_days"])
         day_avg = float(r["day_proximity_avg"])
-        day_col = str(r["day_col"])
-        day_count = float(r["count_value"])
+        is_mating = bool(r["candidate_selected"])
 
-        dt = pd.to_datetime(day_col, dayfirst=True)
-        date_label = dt.date().isoformat()
+        if is_mating:
+            day_col = str(r["best_day_col"])
+            day_count = float(r["best_day_count"])
+            dt = pd.to_datetime(day_col, dayfirst=True)
+            date_label = dt.date().isoformat()
 
-        if n_days > 1:
-            day_avg_exp = float((r["period_total"] - day_count) / (n_days - 1))
+            if n_days > 1:
+                day_avg_exp = float((r["period_total"] - day_count) / (n_days - 1))
+            else:
+                day_avg_exp = day_avg
+
+            zone_cols = bundle.day_to_zone_cols.get(day_col, [])
+            zone_values = bundle.h4_df.loc[row_id, zone_cols].fillna(0).astype(float) if zone_cols else pd.Series(dtype=float)
+            if zone_values.empty:
+                best_zone_col = ""
+                best_zone_count = 0.0
+                best_zone_label = ""
+            else:
+                best_zone_col = str(zone_values.idxmax())
+                best_zone_count = float(zone_values.max())
+                best_zone_label = zone_label_from_col(best_zone_col)
         else:
-            day_avg_exp = day_avg
-
-        zone_cols = bundle.day_to_zone_cols.get(day_col, [])
-        zone_values = bundle.h4_df.loc[row_id, zone_cols].fillna(0).astype(float) if zone_cols else pd.Series(dtype=float)
-        if zone_values.empty:
-            best_zone_count = 0.0
+            date_label = ""
             best_zone_label = ""
-        else:
-            best_zone_col = str(zone_values.idxmax())
-            best_zone_count = float(zone_values.max())
-            best_zone_label = zone_label_from_col(best_zone_col)
+            best_zone_count = 0.0
+            day_count = 0.0
+            day_avg_exp = day_avg
 
         rows.append(
             {
@@ -435,41 +456,13 @@ def build_final_results(
                 "Ewe_EID": r["Ewe_EID"],
                 "Ram_EID": r["Ram_EID"],
                 "treatment": r["treatment"],
-                "Mating": "Y",
+                "Mating": "Y" if is_mating else "N",
                 "date": date_label,
                 "time_zone": best_zone_label,
                 "day_proximity_times": day_count,
                 "day_proximity_avg": day_avg,
                 "day_proximity_avg_exp": day_avg_exp,
                 "time_zone_proximity_times": best_zone_count,
-            }
-        )
-
-    # Add one fallback N row for each pair without any selected mating day.
-    pair_base = (
-        pair_metrics.sort_values(["year", "row_id", "day_col"])
-        .groupby(["year", "row_id"], as_index=False)
-        .first()
-    )
-    selected_pair_keys = set(zip(selected["year"], selected["row_id"]))
-    no_mating_pairs = pair_base[
-        ~pair_base.apply(lambda r: (r["year"], r["row_id"]) in selected_pair_keys, axis=1)
-    ].copy()
-
-    for _, r in no_mating_pairs.iterrows():
-        rows.append(
-            {
-                "year": int(r["year"]),
-                "Ewe_EID": r["Ewe_EID"],
-                "Ram_EID": r["Ram_EID"],
-                "treatment": r["treatment"],
-                "Mating": "N",
-                "date": "",
-                "time_zone": "",
-                "day_proximity_times": 0.0,
-                "day_proximity_avg": float(r["day_proximity_avg"]),
-                "day_proximity_avg_exp": float(r["day_proximity_avg"]),
-                "time_zone_proximity_times": 0.0,
             }
         )
 
@@ -523,43 +516,16 @@ def build_summary_tables(
     result_core = final_df.copy()
     result_core["is_mating"] = result_core["Mating"].eq("Y")
 
-    pair_event_summary = (
-        pair_metrics.groupby(
-            ["year", "treatment", "row_id", "Ewe_EID", "Ram_EID"],
-            as_index=False,
-        )
-        .agg(
-            period_total=("period_total", "first"),
-            day_proximity_avg=("day_proximity_avg", "first"),
-            n_full_days=("n_full_days", "first"),
-            baseline_median_nonzero=("baseline_median_nonzero", "first"),
-            baseline_n_nonzero=("baseline_n_nonzero", "first"),
-            candidate_days_pre_cap=("candidate_pre_cap", "sum"),
-            candidate_days_selected=("candidate_selected", "sum"),
-        )
-        .sort_values(["year", "treatment", "row_id"])
-        .reset_index(drop=True)
-    )
-
     # Year-treatment overview.
     overview = (
-        pair_event_summary.groupby(["year", "treatment"], as_index=False)
+        pair_metrics.groupby(["year", "treatment"], as_index=False)
         .agg(
             pairs=("row_id", "count"),
-            pairs_with_candidate_days=("candidate_days_pre_cap", lambda s: int((s > 0).sum())),
-            pairs_with_selected_days=("candidate_days_selected", lambda s: int((s > 0).sum())),
-            candidate_days_pre_cap=("candidate_days_pre_cap", "sum"),
-            candidate_days_selected=("candidate_days_selected", "sum"),
+            low_signal_pairs=("low_signal_pair", "sum"),
+            candidates_pre_cap=("candidate_pre_cap", "sum"),
+            candidates_selected=("candidate_selected", "sum"),
         )
         .sort_values(["year", "treatment"])
-    )
-    overview["selected_days_per_selected_pair"] = overview.apply(
-        lambda r: (
-            float(r["candidate_days_selected"]) / float(r["pairs_with_selected_days"])
-            if float(r["pairs_with_selected_days"]) > 0
-            else 0.0
-        ),
-        axis=1,
     )
 
     # Plot-day anomaly summary.
@@ -632,21 +598,20 @@ def build_summary_tables(
         pair_metrics[
             (pair_metrics["year"] == 2023)
             & (pair_metrics["treatment"] == "High_shade")
-            & (pair_metrics["day_col"].isin(["15/2/2023", "2/3/2023"]))
+            & (pair_metrics["best_day_col"].isin(["15/2/2023", "2/3/2023"]))
         ]
-        .groupby("day_col", as_index=False)
+        .groupby("best_day_col", as_index=False)
         .agg(
             candidates_pre_cap=("candidate_pre_cap", "sum"),
             selected_after_cap=("candidate_selected", "sum"),
         )
     )
     if not focus_candidates.empty:
-        focus_candidates["date"] = pd.to_datetime(focus_candidates["day_col"], dayfirst=True).dt.date.astype(str)
+        focus_candidates["date"] = pd.to_datetime(focus_candidates["best_day_col"], dayfirst=True).dt.date.astype(str)
         focus_table = focus_table.merge(focus_candidates[["date", "candidates_pre_cap", "selected_after_cap"]], on="date", how="left")
 
     return {
         "overview": overview,
-        "pair_event_summary": pair_event_summary,
         "prefilter_summary": prefilter_summary,
         "anomaly_summary": anomaly_summary,
         "flagged_days": flagged_days,
@@ -682,11 +647,12 @@ def build_parameter_table() -> pd.DataFrame:
         ("PAIR_MIN_NONZERO_DAYS", PAIR_MIN_NONZERO_DAYS, "Pair pre-filter Step 2 threshold"),
         ("PAIR_TRIM_N", PAIR_TRIM_N, "Trim count from each tail in non-zero mean"),
         ("PAIR_RZ_THRESHOLD", PAIR_RZ_THRESHOLD, "Pair pre-filter Step 4 robust z-score threshold"),
+        ("LOW_SIGNAL_ZERO_RATIO_THRESHOLD", LOW_SIGNAL_ZERO_RATIO_THRESHOLD, "Low-signal zero-day ratio"),
+        ("LOW_SIGNAL_TOTAL_QUANTILE", LOW_SIGNAL_TOTAL_QUANTILE, "Low-signal period total quantile"),
         ("MANAGEMENT_RZ_THRESHOLD", MANAGEMENT_RZ_THRESHOLD, "Management anomaly robust z threshold"),
-        ("BASELINE_NONZERO_ONLY", 1.0, "Baseline is computed using non-zero day counts only"),
-        ("SCAN_ALL_NONZERO_DAYS", 1.0, "Every non-zero day is evaluated as potential mating day"),
         ("MATING_SCORE_THRESHOLD", MATING_SCORE_THRESHOLD, "Candidate day robust score threshold"),
         ("MATING_FC_THRESHOLD", MATING_FC_THRESHOLD, "Candidate day fold-change threshold"),
+        ("MATING_DOMINANCE_THRESHOLD", MATING_DOMINANCE_THRESHOLD, "Candidate day dominance threshold"),
         ("MATING_ABS_COUNT_THRESHOLD", MATING_ABS_COUNT_THRESHOLD, "Candidate day absolute count threshold"),
         ("MAX_EWE_PER_RAM_PER_DAY", MAX_EWE_PER_RAM_PER_DAY, "Biological cap for ram per day"),
         ("MAX_RAM_PER_EWE_PER_DAY", MAX_RAM_PER_EWE_PER_DAY, "Biological cap for ewe per day"),
@@ -726,18 +692,15 @@ def run_pipeline() -> None:
     build_parameter_table().to_csv(TABLE_DIR / "analysis_parameters.csv", index=False)
 
     # Console summary for quick verification.
-    total_output_rows = len(final_df)
+    total_pairs = len(final_df)
     total_mating = int((final_df["Mating"] == "Y").sum())
     prefilter_kept = int(prefilter_all["pair_prefilter_keep"].sum())
     prefilter_removed = int((~prefilter_all["pair_prefilter_keep"]).sum())
-    candidate_days_pre_cap = int(pair_all["candidate_pre_cap"].sum())
-    candidate_days_selected = int(pair_all["candidate_selected"].sum())
-    print(f"Total output rows: {total_output_rows}")
+    print(f"Total pairs: {total_pairs}")
     print(f"Pre-filter removed pairs: {prefilter_removed}")
     print(f"Pre-filter kept pairs: {prefilter_kept}")
-    print(f"Total inferred mating rows (Mating=Y): {total_mating}")
-    print(f"Candidate days before cap: {candidate_days_pre_cap}")
-    print(f"Candidate days after cap: {candidate_days_selected}")
+    print(f"Total inferred mating events (Y): {total_mating}")
+    print(f"Low-signal pairs: {int(pair_all['low_signal_pair'].sum())}")
     print(f"Management anomaly days: {int(anomaly_all['management_anomaly'].sum())}")
     print("Saved final result files:")
     for _, row in split_index.iterrows():

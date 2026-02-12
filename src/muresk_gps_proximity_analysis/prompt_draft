@@ -1,0 +1,148 @@
+
+# GPS丢包情况分析
+
+## 背景：
+在开放牧场的羊群中部署了GPS传感器，用于追踪羊群运动行为。当前，GPS传感器处于测试中，本轮实验主要测试GPS的佩戴方式对GPS丢包率的影响。
+
+## GPS 数据格式：
+
+ROOT_DIR/
+    N172/
+        GPS0000_250910.txt
+        GPS0000_250911.txt
+        ...
+    N190/
+        GPS0000_250911.txt
+        GPS0000_250912.txt
+        ...
+其中， 子目录的命名以GPS的编码命名（gps_code), 子目录下，每个文件是每一天的GPS数据；
+文件命名为：GPSXXXX_YYMMDD.txt 其中下划线之后的部分是当前文件的记录时间, 比如：GPS0000_250910.txt 代表的是 2025年9月11日的数据。
+
+每个文件都是以csv格式的数据，字段如下：
+Hours,minutes,seconds,latitude,longitude,altitude,speed,course,HDOP,satellites
+
+## 子任务1： 提取所有GPS数据到一个文件中
+根据上述的GPS文件格式，将所有的GPS文件提取到一个文件中，具体要求如下：
+1. 对于每个文件的GPS数据增加 gps_code列，用于存储设备编码，编码即子文件名；
+2. 根据每个文件名的命名，提取日期信息，并根据实际数据中的 Hours,minutes,seconds，构建GPS采集时间戳
+3. 最终的GPS数据 columns 如下： gps_code, timestamp,latitude,longitude,altitude,speed,course,HDOP,satellites
+4. 合并后的GPS数据存储在 data/muresk_farm_proximity_data/muresk_gps_data/ 目录下，命名为： muresk_gps_raw_data.csv
+5. 提取代码放置在 src/muresk_gps_proximity_analysis/下，命名为：01_raw_gps_data_extract.py
+
+## 子任务2：佩戴方式分组
+设备的masterfile 存放在 data/muresk_farm_proximity_data/muresk_proximity_data目录下的Uwa_logger_sensors_2025.xlsx文件中，是Excel表格方式，Sheet的名字是Link
+
+匹配规则如下：
+- 查找表格数据中的GPS列，将GPS列的设备编号字母变成大写，并祛除空格后，与muresk_gps_raw_data.csv中的数据中的gps_code进行匹配，如匹配成功，则将masterfile中对应Coller design 赋值给muresk_gps_raw_data.csv，列名命名为coller_design
+- 匹配完成后，将数据回写到muresk_gps_raw_data.csv中，完成佩戴方式分组的区分
+- 代码命名为：02_coller_design_assignment.py 存放在src/muresk_gps_proximity_analysis/目录下
+
+
+## 子任务3：统计与分析GPS丢包情况和GPS数据质量情况
+
+设置实验的开始与结束时间，用于过滤掉非实验时段的数据：
+
+- START_DATE: 2025-12-10
+- END_DATE: 2026-01-03
+
+### 1. GPS丢包情况评估
+
+- 根据不同的佩戴方式（coller_design）进行分组；
+- 统计在实验期间，将每天划分为6个时段分组
+- 统计每个时段每个佩戴分组中，latitude,longitude 均不为0的数据条目数；
+- 结果数据的输出维度：
+    - coller_design: 佩戴分组
+    - stat_date: 该统计行的日期， 如：2026-01-01
+    - stat_time_zone: 该统计时段，如： 2026-01-01 04:00 代表 2026年1月1日 04:00~08:00这个统计时段
+    - none_zero_num: 该时段GPS 为丢包总数；
+    - zero_num: 该时段， latitude,longitude 均为0 的条目个数
+
+- 结果数据存储在 data/muresk_farm_proximity_data/muresk_gps_data/ 目录下，命名为： gps_loss_stat.csv
+
+### 2. GPS 数据质量评估
+- 根据不同的佩戴方式（coller_design）进行分组；
+- 统计在实验期间，将每天划分为6个时段分组；
+- 过滤掉 latitude,longitude 为0的数据条目数
+- 求取HDOP在分组中的平均值、最大值、最小值和中值，若当前分组中的过滤后的数目条数小于3条，则所有值均赋值为25.50
+
+- 结果数据的输出维度：
+    - coller_design: 佩戴分组
+    - stat_date: 该统计行的日期， 如：2026-01-01
+    - stat_time_zone: 该统计时段，如： 2026-01-01 04:00 代表 2026年1月1日 04:00~08:00这个统计时段
+    - avg_hdop: hdop均值
+    - min_hdop: hdop最小值
+    - max_hdop: hdop 最大值
+    - median_hdop: hdop 中值
+
+- 结果数据存储在 data/muresk_farm_proximity_data/muresk_gps_data/ 目录下，命名为： gps_quality_stat.csv
+
+上述子任务3的两个统计功能的代码命名为：03_gps_loss_quality_stat.py 存放在src/muresk_gps_proximity_analysis/目录下
+
+## 子任务4：GPS数据质量可视化
+
+根据子任务3产生的统计数据，分别绘制按照天和按照时间段划分的丢包率的变化趋势：
+
+### 按照天进行统计和可视化
+- 根据stat_date进行聚合，分别计算不同coller_design下的丢包率： round((sum(zero_num) / (sum(none_zero_num) + sum(zero_num))) * 100, 2);
+- 绘制实验期间，每天不同coller_design的GPS丢包率变化趋势图
+- 趋势图存放在 data/muresk_farm_proximity_data/gps_quality_figure/ 目录下，命名为： gps_daily_loss_rate.png
+- 根据stat_date进行聚合，分别计算不同coller_design下的hdop数据质量：mean(median_hdop), 绘制实验期间，每天不同coller_design的GPS数据质量变化趋势图
+- 趋势图存放在 data/muresk_farm_proximity_data/gps_quality_figure/ 目录下，命名为： gps_daily_quality_hdop.png
+
+### 按照时间段进行可视化
+- 根据stat_time_zone，分别计算不同coller_design下的丢包率： round(zero_num / (none_zero_num + zero_num) * 100, 2);
+- 绘制实验期间，不同时间段基于coller_design的GPS丢包率变化趋势图
+- 趋势图存放在 data/muresk_farm_proximity_data/gps_quality_figure/ 目录下，命名为： gps_time_zone_loss_rate.png
+- 根据stat_time_zone，分别绘制不同coller_design下的数据质量 median_hdop
+
+子任务4的代码存放在src/muresk_gps_proximity_analysis/目录下，命名为：04_gps_loss_quality_visualize.py
+
+## 子任务5： GPS数据质量报告
+
+主要任务：根据我们之前的任务，包括统计数据和可视化图表等，生成数据分析报告，报告内容要涵盖如下内容：
+
+- 统计数据的开始和结束时间；
+- 统计指标的生成过程和各指标的含义；
+- 基于指标绘制的图表结果；
+- 基于结果表和图等得出的分析结论；
+
+这里，需要你发挥数据分析的主观能动性，从数据中挖掘出对实际任务具有指导意义的结论。目前，基于结果和生成的figure发现了如下结论：
+
+- 从按照天来统计的变化趋势图来看，GPS数据的平均水平，single的佩戴方式，要比double的佩戴方式效果要好一些；
+- 从更细力度的4小时时间段统计结果趋势图来看，single的佩戴方式和double的佩戴方式变化趋势一致，峰值一般出现在12:00~16:00这一时间段，这一时间段由于天气炎热，羊群应该是都跑到树荫下避暑，而因为遮挡，导致GPS信号质量变差。根据设备的逻辑，当设备连续3次无法连接到GPS卫星时，会启动节能休眠模式，休眠2小时后再次重新启动，这是导致 12:00~16:00这一时段数据大量丢包的原因。另外，single的波动要远远大于double的佩戴方式，结合hdop的质量和波动要小于double的方式，我们可以得出如下结论：
+    - Single的佩戴方式，更容易因遮挡原因，导致无法连接到GPS卫星，从而因设备节能逻辑导致GPS丢包严重；但是，在GPS信号良好的前提下，single的佩戴方式更有，会有更低的丢包率和数据质量；
+
+- 实验部署建议：
+    - 采用single佩戴方式，既简单数据质量又高，但是缺点是在外物遮蔽和动物自身遮蔽的情况下，容易触发设备节能机制；
+    - 采用double佩戴方式，是数据质量和丢包率的折中；
+
+- 实验部署建议：
+    - 联系设备生厂商，升级设备固件，降低休眠时长，建议升级50套设备，防止因升级导致灾难性后果；
+    - 两种佩戴方式均衡，比如：各100组
+    - 如果只想使用一种佩戴方式的话，建议采用single方式；
+
+
+请结合真实的统计分析数据和图表，以及你的多维数据探索的结果，重点结合我的上述分析，帮我生成中英文两份数据分析报告。分析报告存储在 data/muresk_farm_proximity_data/gps_quality_report/目录下，请开始执行任务。
+
+
+## 子任务6： 迭代优化
+
+从生成的数据报告中，你的分析给了新的指示
+
+double 组内存在极端设备：
+N173：丢包率 99.91%（6852/6858）
+N180：丢包率 77.40%（5006/6468）
+这两个设备对 double 组总体均值有强影响。
+因此，“佩戴方式效应”与“设备个体健康状态效应”在当前数据中是叠加的，不应只看分组均值。
+
+所以，我们需要使用去掉组内极端设备的数据的情况下，重新执行：
+- 03_gps_loss_quality_stat.py
+    - 新增逻辑：统计实验期间，设备总体的丢包率超过50%的设备数据需要剔除后，再做统计分析
+- 04_gps_loss_quality_visualize.py
+- 以新的分析结果 重新执行 《子任务5： GPS数据质量报告》
+
+
+
+
+
+
