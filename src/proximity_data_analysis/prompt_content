@@ -133,7 +133,24 @@ MAX_RAM_PER_EWE_PER_DAY = 4
 - 仍然需要中英文报告，以图文并茂的形式展示高质量的数据分析报告；
 - 在不危害宿主电脑信息安全的前提下，任何你认为可以提高分析结果和质量的事情，均可以去做，包括安装python 软件包等；
 
+# 代码与报告逻辑更新
 
+- Update 1：在 02_eda_uwa_mating_analysis.py 的 infer_pair_candidates中，存在 low_signal的过滤条件，由于我们之前在prefilter_pairs_before_anomaly中已经祛除了相关的异常数，所以这一步无需再进行low_signal的过滤了，请取消掉；
+- Update 2: infer_pair_candidates baseline和mating判断条件修改；
+    - 计算baseline时，要仅使用序列中的非零值，而不是全序列值；
+    - 同一pair的公羊和母羊，有可能在不同天发生两次交配。因此，best_day_dominance的这个条件可以去掉了；
+    - 要遍历所有的非零数值，而不仅仅是最大值，如果均满足如下条件：
+        - count_value >= MATING_ABS_COUNT_THRESHOLD
+        - count_fc >= MATING_FC_THRESHOLD
+        - count_z >= MATING_SCORE_THRESHOLD
+    - 则可判断为潜在 mating 日
+
+请根据上述逻辑，重新修改 02_eda_uwa_mating_analysis.py 逻辑和03_eda_report_generation.py 中英文报告的生成；
+
+Attention: 报告依然要基于代码的最新逻辑和最新结果进行撰写，而不是照抄原来的模版进行填数。
+
+请开始执行任务~
+        
 
 
 
