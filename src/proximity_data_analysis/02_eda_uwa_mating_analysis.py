@@ -26,9 +26,13 @@ import seaborn as sns
 # ----------------------------
 # Paths and constants
 # ----------------------------
-DATA_DIR = Path("data/uwa_proximity_data")
-EDA_DIR = Path("data/uwa_proximity_eda")
-RES_DIR = Path("data/uwa_proximity_res")
+# DATA_DIR = Path("data/uwa_proximity_data")
+# EDA_DIR = Path("data/uwa_proximity_eda")
+# RES_DIR = Path("data/uwa_proximity_res")
+
+DATA_DIR = Path("/home/ubuntu/work_dir/animal_proximition_analysis/data/uwa_proximity_data")
+EDA_DIR = Path("/home/ubuntu/work_dir/animal_proximition_analysis/data/uwa_proximity_eda")
+RES_DIR = Path("/home/ubuntu/work_dir/animal_proximition_analysis/data/uwa_proximity_res")
 FIG_DIR = EDA_DIR / "figures"
 TABLE_DIR = EDA_DIR / "tables"
 REPORT_DIR = EDA_DIR / "reports"
