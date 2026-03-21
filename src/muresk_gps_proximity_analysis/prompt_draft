@@ -142,6 +142,259 @@ N180：丢包率 77.40%（5006/6468）
 - 以新的分析结果 重新执行 《子任务5： GPS数据质量报告》
 
 
+# 子任务 7： proximity Logger 数据预处理
+
+Proximity Logger 的数据记录方式，是由信标 beacon发送信号，在一定范围内，如果接收器 receiver 收到信号，则会记录当时的信号强度，表明两只羊距离较近， 数据是由receiver记录。
+
+原始的数据记录在 muresk_proximity_data 目录下， 文件名以 60secProxSummary.csv 结尾， 接收器的标号，则放在开头，以下划线连接，比如：66_60secProxSummary.csv 表示， 接收器66号，与所有其他beacon在一分钟内是否有近场接触，有信号就记录，没信号则为空。
+
+现在，我们要基于原始数据，统计每一对羊（receiver-beacon） 在5分钟内的接触次数，只要数据就标记为1，进行5分钟内的计数聚合， 最终的聚合的数据形式，为每对（receiver-beacon）一行，展现所有聚合时间段中，这对羊的接触次数，columns如下：
+
+- receiver_gps_id: receiver 对应的gps id 
+- receiver_actigraph_id： receiver 对应的Actigraph ID
+- receiver_serial_id: 对应的设备serial id
+- beacon_gps_id: beacon 对应的gps id 
+- reaconactigraph_id： beacon 对应的Actigraph ID
+- beacon_serial_id：beacon对应的设备serial id
+- beacon_collar_design: 是哪一种design
+后面跟整个实验期间的每5分钟的time_slot,例如：
+- time_splot_1: 2025-12-09 12:05:00
+- time_splot_2: 2025-12-09 12:10:00
+
+time_slot和数据形式，可参考HS_proximity_2023_4h_UWA.csv， 只不过这个表格是基于4小时的聚合。
+
+## 任务要求
+- 加载 muresk_proximity_data 目录下的 以60secProxSummary.csv结尾的数据所有数据；
+- 根据文件名的下划线分隔，找到receiver对应的Actigraph， 如：66_60secProxSummary.csv 对应的是 66
+- 数据中首列是Timestamp， 其他列分别是不同的beacon的serial number
+- 按照5分钟进行聚合，获得聚合后每对 receiver和beacon的接近次数
+- 基于 data/muresk_farm_proximity_data/muresk_proximity_data/Uwa_logger_sensors_2025.xlsx 中 Link 这个sheet的元数据，获得 gps, actigraph和serial的对应关系，以及属于哪个 coller design
+
+代码存放在：src/muresk_gps_proximity_analysis/05_proximity_logger_data_aggregate.py
+聚合后的数据，存放在 data/muresk_farm_proximity_data/muresk_proximity_data/muresk_proximity_5min.csv
+
+这里注意，不同logger的文件，可能存在时间长度一样的问题，这个要最终汇总的文件中，用最长时间进行整合
+
+请开始任务吧
+
+
+# 子任务 7： proximity Logger 数据预处理优化
+
+在 05_proximity_logger_data_aggregate.py 代码中，增加实验时间的过滤条件，这样就无需处理所有数据了
+- START_DATE： 默认 2025-12-10 （从零点开始）
+- END_DATE： 默认 2026-01-03 （到23:59:59结束）
+
+重跑任务，生成过滤后的数据
+
+# 子任务8：proximity logger 与 GPS数据的关系验证
+
+## 背景和推理
+
+由于proximity logger 成本高且部署不易，我们希望探索GPS取代proximity logger的可能性，观察这两类传感器之间的是否存在强关联。 原则上，当两只羊靠近时，proximity logger 的计数会高，GPS记录的这两只羊的距离会小。
+
+## 探索方法：
+
+根据 muresk_proximity_5min.csv 和 muresk_gps_raw_data.csv 这两个数据进行探索，具体步骤如下：
+
+- 查找 muresk_proximity_5min.csv 中， beacon_collar_design为double的每对羊，进行探索。因为我们在gps数据质量分析中，发现double的佩戴方式要好很多。
+- 从 上一步获得的每一对羊的 gps id, 到对应的muresk_gps_raw_data.csv中，扎到这两只羊的gps数据。 这里注意一点：两个表格中的 gps id 需要对 字母进行转化， muresk_gps_raw_data.csv 是大写字母，如：N176, 而muresk_proximity_5min.csv中的是小写字母，如：n176
+- 基于上一步两只羊的数据，计算它们每5分钟之间的相对距离。这里，由于会存在数据丢失可能会存在一些时间段没有距离。一种方式是进行线性差值，来补全丢失的数据。但是，大段时间都缺失时，则不适合进行线性插值。这个插值的度，要进行探索，初步默认为插值不得超过3个点（15分钟）。 否则，按照缺失算。
+
+- 计算每五分钟的距离时，也将gps的timestamp转化为 5分钟的 time_slot, 便于与muresk_proximity_5min.csv中的proximity 计数器数据，进行分析。
+
+- 每对羊的距离计算结果，存储在 data/muresk_farm_proximity_data/gps_proximition_data/目录下， 文件名为 两个GPS code 中间用下划线连接的 csv 文件，比如： N177_N175_distance.csv
+
+- 代码存储在 src/muresk_gps_proximity_analysis/06_gps_proximity_distance.py
+
+发挥你的主观能动性，将你想到的或注意到的关键补充或问题加入进去，优化迭代代码，让得出的数据和结论可靠、可信、有逻辑。
+
+
+
+# 任务9：还原和统计分析
+
+## 子任务1：
+
+1. 取消在 06_gps_proximity_distance.py 固化的时钟修正：
+PROXIMITY_TIME_SHIFT_MINUTES = 60
+
+然后重跑代码，获得原始数据
+
+## 子任务2：
+按照指定的时间slot进行统计分析，统计每对羊的proximity的sum数据，和 distance 小于特定距离的条目数占该时间段总合法条目数的占比数据。这里有两个超参数：
+
+- 指定聚合时间slot: AGGREGATE_TIME, 默认是2h
+- 指定distance的距离范围：DISTANCE_RANGE, 默认为30m
+
+之后，绘制每对羊 proximity 和 distance小于特定范围的变化趋势图，每对羊绘制一张图
+
+代码 存放在 07_gps_proximity_aggregate.py, 图片存放在对应 data/muresk_farm_proximity_data/gps_proximition_data/figures 目录下的
+
+聚合数据存放在 data/muresk_farm_proximity_data/gps_proximition_data/ 目录下， 要有distance的总记录数，范围内的记录数和占比信息
+
+请开始执行任务
+
+
+# 任务9： Proximity logger 与 GPS距离相关性探索
+
+让我们基于 proximity 和 gps 之间的距离，进行grid search 方式的一致性分析，具体如下：
+
+- 针对时间聚合窗口，我们分别选择 30 min, 60 min, 90 min 120 min 150 min, 180 min, 210 min, 240 min 的聚合时间窗，对 proximity 和 distance 聚合；
+- 针对 proximity 接近次数的聚合方式，也采用百分比的方式，因为proximity logger的采样频率是1分钟一次，所以我们可以计算出窗口内的接近率是多少；
+- 针对 distance的聚合，我们也采用分段的方式，对不同距离范围的接近进行次数和占比计算，距离范围选择如下：
+    - <= 10m
+    - <= 15m
+    - <= 20m
+    - <= 25m
+    - <= 30m
+    - <= 35m
+    - <= 40m
+    - <= 45m
+    - <= 50m
+由于 proxixmity logger 和GPS设备是独立设备，其时钟是不同步的。 为了更好地找到匹配点，我们可以采用序列的互相关最大化法，找到两个序列的lag，可以使用固定GPS序列，滑动proximity logger 数据的方式，按照5分钟的粒度进行调整，找到每对羊之间最优的lag.
+
+输出：
+- 数据处理代码存放在：07_gps_proximity_aggregate.py
+- 不同聚合窗口的图片 存放在： data/muresk_farm_proximity_data/gps_proximition_data/figures 目录下，并按照不同聚合窗口构建子文件夹；
+- 针对每一对羊的每一个聚合窗口，和每一个距离范围，绘制上下子图的形式，上子图展示的是实验期间，原始的proximity的接近占比和GPS的接近占比趋势图， 下子图则是找到最优lag 并调整后的趋势占比图，并标记最优的lag时间是多少；
+- 基于结果和图像的数据分析和总结报告，报告生成代码存放：08_gps_proximity_relation_report.py, 报告存放在data/muresk_farm_proximity_data/gps_proximition_data/reports中
+
+另外，发挥你的主观能动性，进行主动式的数据探索和分析，围绕着我们最终的目标展开：Proximity logger 与 GPS距离相关性探索，探索使用GPS取代 proximity logger的可行性。
+因为，我上述描述的方法可能也存在问题，或者数据本身可能也存在问题，所以要发挥主观能动性，进行有目标的主动扩展与分析，前提优先完成
+
+
+
+# 任务10: 全量 proximity 和 gps 相关性分析
+
+在之前计算 gps 和 proximity 距离时，我仅仅计算了 receiver 和 beacon的 collar design 为double的设备，现在我们要全量测试所有的beacons的数据。
+同时，设置：
+- MIN_VALID_RATIO = 0.5  # exclude devices with valid ratio < 1% (loss rate > 50%)
+
+现在，请重新执行 06， 07 和 08的程序，并基于新的数据和结果，进行分析和探索，给出与我们核心目标相关的推论和结论，比如：是否可以用GPS代替proximity logger， 替代时，该以何种粒度的时间窗口进行聚合等。
+
+这里注意，single 的佩戴方式，可能导致大量的数据丢失，尤其是在 12:00 ~ 16:00 的时间段，分析时，要考虑到这个因素的影响。
+
+开始任务吧，要发挥你的主动探索与分析技能。
+
+
+# 任务 11： 数据分析报告生成
+
+根据最终结果和人工的校验，我们发现设备质量最高的数据如下：
+
+- N172 N171
+- N172 N182
+- N172 N189
+
+质量高的原因是 proximity logger 的数据更加可靠可信。 
+
+因此，在接下来的报告里，我们要基于这三对羊的数据，围绕着我们最终的目标展开：Proximity logger 与 GPS距离相关性探索，探索使用GPS取代 proximity logger的可行性， 进行论证分析。
+
+另外，也要考虑 N182 和 N189 由于是 single的佩戴方式，中间会产生很多GPS的丢失，这对于某些位置的数据确实，比如proximity logger 计数高，但是 gps统计的接近率却很低，很可能是因为gps数据丢失导致的。这在分析时也要考虑到，并额外给出除这部分数据影响下的结果又是怎样的。
+
+现在，我们使用如下配置的结果，重新生成最终数据分析报告，命名为：selected_gps_proximity_relation_report.md 放在分析报告目录下，使用英文撰写报告
+
+- gps distance: 15m
+- 聚合窗口： 240min
+
+另外， 也要基于你自己的深入分析和判断，找到可能潜在的问题。 我们的目标是，在GPS丢失率较低的情况下，是否可以取代proximity logger。
+
+请开始任务，生成最终报告，代码存放在： 09_gps_proximity_relation_report_final.py
+
+
+# 任务12： Proximity Logger 与 GPS 信号 相关性分析报告
+
+现在，我需要提交完整的数据分析报告，具体组织形式，我有如下几条要求：
+
+- 报告中包含数据分析报告的目的：Proximity logger 与 GPS距离是否存在强相关性，进而判断用GPS设备取代更昂贵的proximity logger的可行性；
+- Proximity logger 和 GPS 设备是两套独立的设备，因此他们存在时间不同步或日期错位是正常的。所以，我们可以通过调整lag后的 best corr 作为是否可取代的依据；
+- 数据来源：Muresk Farm Experimental Data provided by Luoyang and Peter
+- Proximity logger 原始采样频率（1 min）和GPS采样频率（5 min）。 以及在进行相关性计算的数据，是如何获得的；
+- 我们开展的 grid search, 包含 任务 9 的描述，并基于对数据质量和效果，我们选择了 240min 的聚合窗口， 以及 GPS close ratio 的范围选择为15m, 原因是GPS的误差在10m左右，当两只羊靠的较近时，15m是一个相对可靠的接近距离阈值。
+- 还要指出 proximity rate 和 GPS close ratio 的计算方法；
+- 报告要包含 figures/window_240min 下的图像，以及 report/figures_selected 目录下robuts的图像；
+- 数据只选择：
+    - N172 N171
+    - N172 N182
+    - N172 N189
+- 报告的内容，要包含 gps_proximity_relation_report.md 中上述所选数据相关的内容，以及selected_gps_proximity_relation_report.md中的关键内容，要求基于逻辑融合这两份报告，生成新的报告
+    - 不是简单的融合，而是基于逻辑和整体内容的综合考虑和整合；
+    - 报告内容为英文版，要讲清楚报告的来龙去脉和关键指标计算逻辑
+    - 语言简洁清晰，讲清楚即可，无需使用非常高级/复杂的词汇火句式，这不是写作文，而是让客户获得有用信息；
+    - 报告存放目录不变，报告的标题为：Can GPS Devices Replace Proximity Loggers for Detecting Mating Behavior?
+
+请参考上述几条内容，但不要局限于以上列出的内容，可根据整个上下文，修正上述要求潜在的问题和补充你认为重要的内容，开始任务吧
+
+# 任务13：Proximity Logger 与 GPS信号 相关性分析 Correlation analysis
+
+
+基于如下的数据对：
+    - N172 N171
+    - N172 N182
+    - N172 N189
+
+数据聚合配置：
+- gps distance: 15m
+- 聚合窗口： 240min
+
+绘制一张proximity logger 和 gps 的 correlation 图， 散点+拟合曲线，给出拟合参数和相关性R^2
+- 横轴：gps close ratio 
+- 纵轴：proximity rate
+
+绘制两套：
+- Lag0的散点图
+    - 用红圈标注出明显异常的点：12：00~16:00期间，proximity rate高， 但是 gps close ratio 很低的点
+    - 去掉不在相同时间窗的数据点
+    - 去掉异常点后的，线性拟合，并给出拟合参数和相关性参数
+- Best Lag的散点图，在进行动态时间窗移动后，绘图要求同Lag0
+
+- 图例和标题等所有内容，都要使用英文，因为我要用来做英文报告PPT
+
+代码存储在 11_gps_proximity_correlation_graph.py
+图表存放在 data/muresk_farm_proximity_data/gps_proximition_data/figures/corr_figures/
+
+请开始任务吧~
+
+# 任务13 更新
+
+红圈标注的位置不准，去掉红圈标注
+
+- Lag0的散点图
+    - 第一张图：保持原图不变（同上一个任务，去掉异常点的红圈标注）
+    - 第二张图：直接去掉12：00~16:00期间的数据，不画在图上，再次绘制
+
+- Best Lag的散点图，处理逻辑相同
+
+# 任务13 更新2
+
+异常数据处理，需要从原始数据着手：
+- 在GPS距离的聚合窗口内，若 distance 因为gps数据丢失导致的missing率超过50%的数据点去掉
+- 重新绘制Lag0和Best Lag 的散点图和拟合曲线 
+
+
+
+
+
+# 数据分析报告生成图：
+
+传感器： proximity logger
+- receiver: receive the signal of beacon, if received， the corresponding beacon count increased by 1.
+- beacon: send the beacon signal per minute
+
+beacon发送的信号范围是有限的，信号强度低于一定程度后，receiver 就接受不到了，
+
+请以羊为例，绘制proximity logger 工作示意图
+
+# 数据分析报告示意图
+
+绘制示意图， GPS close ratio 的计算方法；
+
+分别计算了在聚合窗口4小时内， 两只羊距离上：10m ,15m, 20m, 30m 范围内的GPS距离计数，并计算占总GPS配对数的占比， GPS 采样频率是5min一次，
+
+请绘制英文示意图，一目了然的说明上述的计算逻辑
+
+
+
+
+
 
 
 
