@@ -1,0 +1,58 @@
+Hi everyone
+
+I'm Yuliang, hired by Shane for data analysis. It's my first time to stand here. 
+
+Shane always wants to know can gps device replace proximity loggers for detecting mating behavior. I did it before, but because the poor gps accuracy, we cannot not figure it out. 
+
+Now， based on the new data given by Peter and Luoyang, I redo it.
+
+Based on the raw data of proximity logger. I infered the work mode of that device. Or may be you guys know better than me.
+
+We have  a beacon to transmit a signal every 1 minute. If the receiver gets the signal, it will record the signal strenth indicator.
+
+The panel2 shows the procedure: out of range , and then they moving in and social interaction for while, and then moving away. And  finally we can figure out the sheep b was near sheep A for 7 minutes. 
+
+This is the raw data of proximity logger recorded by receiver 614. And these are the beacon ids. If there is a value, we count as 1 time. 
+
+
+Also, we have the gps data  for both receiver and beacon. We can get the distance based on the latitudes and lontitude values.
+
+As we can see here, based on the distances, we can infer that the two sheep are close together. But the proximity count is zero. There are two reasons:
+
+- the proximity logger is out of power, receiver, beacon or both
+- the second reason is that the gps and proximity logger time are not synchronized.
+
+We must be careful when we calculate the correlation bw them. 
+
+The next step is that we should find a way to compare the proximity count and the gps distance. I tried several ways to do that. And find this way is the best. 
+
+
+As shown in this figure, we divided the distance into various ranges, from 10m to 30m. Then, we count how many pairs of the distance fall into the range. And divided this value by the total number of pairs. 
+
+And this value should have the same trend with the proximity logger data. 
+
+Here, we have two hyperparameters to set. 
+
+The first one is the aggregation window. I tested aggregation window from 30min to 4 hours in 30-minutes increments. Longer interval results in more stable data. 
+
+The second one is the gps close range. I tested the range from 10ms to 50m in 5 meters increments.
+
+I found that the range of 15m is reasonable. According to the previous analysis, our new gps devices have the accuracy error of approximitely 10m. So if  the two sheep are close together, 15m is reasonable setting. 
+
+Here is the time series of proximity rate and the gps close ratio. As we can see, the two values should have a high correlation. 
+
+We mentioned before that the two kind of devices may have the time synchronization problem. So I keep the gps squence fixed, and slide the proximity series to identify the best-match position, as shown in the bottom figure. 
+
+Here is another pair. Well, as we can see here, the proximity rate is high but the gps close ratio is zero. That's because we missed the gps values during this period. When the sheep under the tree, the device cannot connect to the satellites and based on the power saving settings, if the device failed 4 times to connect the satellites, it will enter into sleep mode for 2 hours. 
+
+Here is the evidence. During the period of 12 to 16, this pair has a very low gps valid ratio. That's because the N171 and N189 are put the collar on the side of the neck, while N182 just put the gps under the neck. When the sleep lie down, the gps will be blocked by the body and have a poor satellite signals. 
+
+After removing the abnormal data, we can get a even higher correlation between the two series. 
+
+
+And here is the scatter plot between the proximity series and the gps series. As we can see, the correlation between them is relatively high after we do the synchronization movement. 
+
+And the summary is as follows:
+
+
+
